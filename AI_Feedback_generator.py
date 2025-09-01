@@ -1,71 +1,50 @@
-# streamlit_app.py
-
 import streamlit as st
-import re
-import subprocess
-import pandas as pd
-from sklearn.feature_extraction.text import TfidfVectorizer
-from sklearn.linear_model import LogisticRegression
-from sklearn.model_selection import train_test_split
-from sklearn.datasets import fetch_20newsgroups
+from transformers import pipeline
 
-# Load and preprocess dataset
-@st.cache_data
-def load_data():
-    data = fetch_20newsgroups(subset='train', categories=['rec.autos', 'sci.med'])
-    texts = data.data[:1000]
-    labels = [1 if 'good' in text.lower() or 'great' in text.lower() else 0 for text in texts]
-    texts_clean = [re.sub(r"[^a-zA-Z0-9 ]", "", t.lower()) for t in texts]
-    return texts_clean, labels
-
-# Train sentiment classifier
+# Initialize pipelines (Hugging Face models)
 @st.cache_resource
-def train_classifier(texts_clean, labels):
-    X_train, X_test, y_train, y_test = train_test_split(texts_clean, labels, test_size=0.2, random_state=42)
-    vectorizer = TfidfVectorizer(max_features=500)
-    X_train_vec = vectorizer.fit_transform(X_train)
-    model = LogisticRegression()
-    model.fit(X_train_vec, y_train)
-    return model, vectorizer
+def init_pipelines():
+    sentiment_pipeline = pipeline("sentiment-analysis",model="distilbert/distilbert-base-uncased-finetuned-sst-2-english")
+    response_pipeline = pipeline("text2text-generation", model="google/flan-t5-base")  # Lightweight GPT-2
+    return sentiment_pipeline, response_pipeline
 
-# Generate response from local LLM
-def generate_response(prompt):
-    try:
-        result = subprocess.run(
-            ['ollama', 'run', 'mistral'],
-            input=prompt.encode(),
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE
-        )
-        return result.stdout.decode('utf-8')
-    except FileNotFoundError:
-        return "Error: Ollama or Mistral model not found. Please install from https://ollama.com."
+sentiment_analyzer, response_generator = init_pipelines()
 
 # Streamlit UI
-st.title("🧠 AI-Powered Customer Feedback Generator")
-st.markdown("This app classifies customer reviews and generates intelligent replies using a free local LLM.")
+st.title("🧠 AI Feedback Generator")
+st.markdown("Enter customer feedback and get sentiment detection plus a polite AI response!")
 
-user_input = st.text_area("✍️ Enter a customer review:", height=150)
+user_feedback = st.text_area("✍️ Enter your feedback here:", height=150)
 
-if user_input:
-    texts_clean, labels = load_data()
-    model, vectorizer = train_classifier(texts_clean, labels)
+if user_feedback:
+    # Sentiment Analysis
+    result = sentiment_analyzer(user_feedback)[0]
+    sentiment = result['label']
+    confidence = result['score']
+    
+    st.markdown(f"**🧾 Detected Sentiment:** `{sentiment}` (Confidence: {confidence:.2f})")
+    
+    # Generate AI Response
+    if sentiment == "POSITIVE":
+        prompt = f"Write a cheerful and polite reply to this positive feedback: '{user_feedback}'"
+    elif sentiment == "NEGATIVE":
+        prompt = f"Write an empathetic and apologetic reply to this negative feedback: '{user_feedback}'"
+    else:
+        prompt = f"Write a neutral, polite reply to this feedback: '{user_feedback}'"
+    
+    # response = response_generator(prompt, max_length=100, do_sample=True, temperature=0.7)[0]['generated_text']
+    # response = response_generator(prompt, max_length=60, truncation=True)[0]['generated_text']
+    # response_generator(prompt, max_length=100, truncation=True)
+    response = response_generator(
+    prompt,
+    max_new_tokens=80,
+    do_sample=True,       # enables random sampling
+    temperature=0.7,      # creativity
+    top_p=0.9,            # nucleus sampling
+    repetition_penalty=2.0, # discourages repeated phrases
+    truncation=True
+)[0]['generated_text']
 
-    clean_input = re.sub(r"[^a-zA-Z0-9 ]", "", user_input.lower())
-    vec_input = vectorizer.transform([clean_input])
-    prediction = model.predict(vec_input)[0]
 
-    sentiment = "Positive" if prediction == 1 else "Negative"
-    prompt = (
-        f"Write a polite and cheerful response to this positive customer review: '{user_input}'"
-        if prediction == 1 else
-        f"Write an empathetic and apologetic response to this negative customer review: '{user_input}'"
-    )
-
-    st.markdown(f"**🧾 Detected Sentiment:** `{sentiment}`")
-    st.markdown("**📝 Generated Response:**")
-    response = generate_response(prompt)
-    st.code(response)
-
-    if "Error:" in response:
-        st.error(response)
+    st.markdown("**📝 AI Generated Response:**")
+    st.write(response)
